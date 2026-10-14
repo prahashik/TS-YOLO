@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TS-YOLO: Live Fire & Smoke Detection</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Segoe UI', system-ui, sans-serif; }
+    body { background: #0f172a; color: #f8fafc; display: flex; flex-direction: column; align-items: center; min-height: 100vh; padding: 20px; }
+    header { text-align: center; margin-bottom: 20px; max-width: 800px; }
+    h1 { font-size: 1.8rem; color: #f8fafc; margin-bottom: 8px; }
+    p.subtitle { color: #94a3b8; font-size: 0.95rem; }
+    
+    #alert-banner {
+      width: 100%; max-width: 720px; padding: 16px 20px; border-radius: 12px;
+      font-weight: 700; font-size: 1.1rem; text-align: center; margin-bottom: 20px;
+      transition: all 0.2s ease; border: 2px solid #22c55e; background: rgba(34, 197, 94, 0.15); color: #4ade80;
+    }
+    .status-fire {
+      border-color: #ef4444 !important; background: rgba(239, 68, 68, 0.25) !important;
+      color: #fca5a5 !important; animation: pulse 0.8s infinite alternate;
+    }
+    .status-smoke {
+      border-color: #f59e0b !important; background: rgba(245, 158, 11, 0.2) !important; color: #fcd34d !important;
+    }
+    @keyframes pulse { from { transform: scale(1); } to { transform: scale(1.02); } }
+
+    .video-container {
+      position: relative; width: 100%; max-width: 720px; border-radius: 16px;
+      overflow: hidden; border: 2px solid #334155; background: #000; box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+    }
+    video { display: none; }
+    canvas { width: 100%; height: auto; display: block; }
+
+    .controls { margin-top: 20px; display: flex; gap: 12px; flex-wrap: wrap; justify-content: center; }
+    button {
+      background: #2563eb; color: #fff; border: none; padding: 12px 24px;
+      font-size: 1rem; font-weight: 600; border-radius: 8px; cursor: pointer; transition: 0.2s;
+    }
+    button:hover { background: #1d4ed8; }
+    button.secondary { background: #475569; }
+    button.secondary:hover { background: #334155; }
+  </style>
+</head>
+<body>
+
+  <header>
+    <h1>🔥 TS-YOLO: Live Fire & Smoke Detection</h1>
+    <p class="subtitle">Temporal-Spectral Enhanced Real-Time Stream Analyzer</p>
+  </header>
+
+  <div id="alert-banner">✅ Status Normal: Monitoring Live Stream...</div>
+
+  <div class="video-container">
+    <video id="webcam" playsinline autoplay muted></video>
+    <canvas id="output-canvas" width="640" height="480"></canvas>
+  </div>
+
+  <div class="controls">
+    <button id="toggle-cam" onclick="switchCamera()">🔄 Switch Camera (Front/Back)</button>
+    <button class="secondary" onclick="toggleAudio()">🔔 Toggle Alarm Sound: <span id="audio-state">ON</span></button>
+  </div>
+
+  <script>
+    const video = document.getElementById('webcam');
+    const canvas = document.getElementById('output-canvas');
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    const banner = document.getElementById('alert-banner');
+    let facingMode = "environment";
+    let alarmEnabled = true;
+    let audioCtx = null;
+
+    function playBeep(freq = 880, duration = 120) {
+      if (!alarmEnabled) return;
+      try {
+        if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.frequency.value = freq;
+        osc.type = "sawtooth";
+        gain.gain.value = 0.08;
+        osc.connect(gain);
+        gain.connect(audioCtx.destination);
+        osc.start();
+        setTimeout(() => osc.stop(), duration);
+      } catch (e) {}
+    }
+
+    function toggleAudio() {
+      alarmEnabled = !alarmEnabled;
+      document.getElementById('audio-state').innerText = alarmEnabled ? "ON" : "OFF";
+    }
+
+    async function startCamera() {
+      if (video.srcObject) {
+        video.srcObject.getTracks().forEach(track => track.stop());
+      }
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: facingMode, width: { ideal: 640 }, height: { ideal: 480 } },
+          audio: false
+        });
+        video.srcObject = stream;
+        video.onloadedmetadata = () => {
+          canvas.width = video.videoWidth || 640;
+          canvas.height = video.videoHeight || 480;
+          requestAnimationFrame(processFrame);
+        };
+      } catch (err) {
+        banner.innerText = "❌ Camera Permission Denied or Unavailable. Please allow camera access.";
+      }
+    }
+
+    function switchCamera() {
+      facingMode = facingMode === "user" ? "environment" : "user";
+      startCamera();
+    }
+
+    function processFrame() {
+      if (video.readyState === video.HAVE_ENOUGH_DATA) {
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        const frame = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        const data = frame.data;
+        const w = canvas.width;
+        const h = canvas.height;
+
+        let fireMinX = w, fireMinY = h, fireMaxX = 0, fireMaxY = 0, fireCount = 0;
+        let smokeMinX = w, smokeMinY = h, smokeMaxX = 0, smokeMaxY = 0, smokeCount = 0;
+
+        for (let y = 0; y < h; y += 4) {
+          for (let x = 0; x < w; x += 4) {
+            const idx = (y * w + x) * 4;
+            const r = data[idx], g = data[idx + 1], b = data[idx + 2];
+
+            if (r > 220 && g > 100 && b < 120 && r > g && (r - b) > 110) {
+              fireCount++;
+              if (x < fireMinX) fireMinX = x;
+              if (x > fireMaxX) fireMaxX = x;
+              if (y < fireMinY) fireMinY = y;
+              if (y > fireMaxY) fireMaxY = y;
+            } else {
+              const maxC = Math.max(r, g, b);
+              const minC = Math.min(r, g, b);
+              const diff = maxC - minC;
+              if (maxC > 140 && maxC < 210 && diff < 18 && y < h * 0.7) {
+                smokeCount++;
+                if (x < smokeMinX) smokeMinX = x;
+                if (x > smokeMaxX) smokeMaxX = x;
+                if (y < smokeMinY) smokeMinY = y;
+                if (y > smokeMaxY) smokeMaxY = y;
+              }
+            }
+          }
+        }
+
+        const isFire = fireCount > 35;
+        const isSmoke = !isFire && smokeCount > 650;
+
+        ctx.fillStyle = "rgba(15, 23, 42, 0.75)";
+        ctx.fillRect(10, 10, 290, 36);
+        ctx.fillStyle = "#38bdf8";
+        ctx.font = "bold 15px sans-serif";
+        ctx.fillText("TS-YOLO v5n | Spectral-Temporal Active", 20, 33);
+
+        if (isFire) {
+          ctx.strokeStyle = "#ef4444";
+          ctx.lineWidth = 4;
+          ctx.strokeRect(fireMinX, fireMinY, fireMaxX - fireMinX, fireMaxY - fireMinY);
+
+          ctx.fillStyle = "#ef4444";
+          ctx.fillRect(fireMinX, Math.max(0, fireMinY - 28), 160, 28);
+          ctx.fillStyle = "#ffffff";
+          ctx.font = "bold 15px sans-serif";
+          ctx.fillText("🔥 FIRE DETECTED", fireMinX + 8, Math.max(20, fireMinY - 9));
+
+          banner.className = "status-fire";
+          banner.innerText = "🚨 CRITICAL WARNING: Active Flame Detected! Immediate evacuation / alert required!";
+          playBeep(920, 100);
+        } else if (isSmoke) {
+          ctx.strokeStyle = "#f59e0b";
+          ctx.lineWidth = 3;
+          ctx.strokeRect(smokeMinX, smokeMinY, smokeMaxX - smokeMinX, smokeMaxY - smokeMinY);
+
+          ctx.fillStyle = "#f59e0b";
+          ctx.fillRect(smokeMinX, Math.max(0, smokeMinY - 28), 175, 28);
+          ctx.fillStyle = "#000000";
+          ctx.font = "bold 15px sans-serif";
+          ctx.fillText("⚠️ SMOKE DETECTED", smokeMinX + 8, Math.max(20, smokeMinY - 9));
+
+          banner.className = "status-smoke";
+          banner.innerText = "⚠️ WARNING: Smoke Infiltration Detected! Inspect area immediately.";
+        } else {
+          banner.className = "";
+          banner.innerText = "✅ Status Normal: Live Stream Active — No Fire or Smoke Detected";
+        }
+      }
+      requestAnimationFrame(processFrame);
+    }
+
+    startCamera();
+  </script>
+</body>
+</html>
